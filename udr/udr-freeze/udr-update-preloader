@@ -1,0 +1,44 @@
+#!/bin/bash
+
+preloader_path=/tmp/preloader.bin
+preloader_sum=9db98453618be04ff9a92e2d0aa363dd
+dst_dev_path=/dev/mtdblock0
+sysid=$(awk -F= 'match($1, /systemid/) {print $2}' /proc/ubnthal/system.info)
+
+if [ "eccc" != "$sysid" ]; then
+    echo "Invalid product"
+    exit 1
+fi
+
+curl -sL -o $preloader_path https://github.com/ubiquiti/support-tools/blob/master/udr/udr-freeze/preloader.bin?raw=true
+if [ $? -ne 0 ]; then
+    echo "Download failed"
+    exit 1
+fi
+
+md5sum -b $preloader_path | grep -qw $preloader_sum
+if [ $? -ne 0 ]; then
+    echo "Checksum mismatch"
+    exit 1
+fi
+
+verify_preloader() {
+    dd if=$dst_dev_path bs=$(stat -c%s $preloader_path) count=1 2>/dev/null | md5sum | grep -qw $preloader_sum
+}
+
+if verify_preloader; then
+    echo "Preloader already up to date"
+    exit 0
+fi
+
+echo "Updating preloader."
+echo "Please do NOT turn off your device."
+if ! dd if=$preloader_path of=$dst_dev_path 2>/dev/null || ! verify_preloader; then
+    echo "Something went wrong!!!"
+    echo "Please try to run this script again,"
+    echo "or contact support for help."
+    echo "The most important: PLEASE DO NOT TURN OFF YOUR DEVICE"
+    exit 1
+fi
+
+echo "Update success. Please reboot the device"
