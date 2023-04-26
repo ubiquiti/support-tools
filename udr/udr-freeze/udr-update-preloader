@@ -4,9 +4,10 @@ preloader_path=/tmp/preloader.bin
 preloader_sum=9db98453618be04ff9a92e2d0aa363dd
 dst_dev_path=/dev/mtdblock0
 sysid=$(awk -F= 'match($1, /systemid/) {print $2}' /proc/ubnthal/system.info)
+rev=$(awk -F= 'match($1, /boardrevision/) {print $2}' /proc/ubnthal/system.info)
 
-if [ "eccc" != "$sysid" ]; then
-    echo "Invalid product"
+if [ "eccc" != "$sysid" ] || [ "${rev:-0}" -lt "32" ]; then
+    echo "Invalid product: $sysid($rev)"
     exit 1
 fi
 
