@@ -23,7 +23,7 @@ sysid=$(awk -F= 'match($1, /systemid/) {print $2}' /proc/ubnthal/system.info)
 
 # sanity checks
 case "$sysid" in
-ea51)
+ea51 | ea63 | ea67)
 	;;
 *)
     echo "Invalid product: $sysid"
