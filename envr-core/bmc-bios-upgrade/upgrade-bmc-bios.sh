@@ -3,19 +3,25 @@
 tmp_firmware_path="/tmp/firmware.tar"
 bmc_version="2.05.13"
 bmc_md5sum="a309ce905c83130ae546a538f73afda1"
-bios_version="2.02.0022"
-bios_md5sum="97e24a8f44c518aeec62037a9be1c6b2"
+bios_version="2.02.UI09"
+bios_md5sum="d56abfb7642f5f09853ea2ad12728614"
 timeout=300
+bios_task_id=""
 
-enable_bmc_interface() {
-	ifconfig usb0 169.254.0.18
-	echo "Checking BMC connectivity..."
+check_bmc_connectivity() {
+	printf "Checking BMC connectivity..."
 	ping -q -c 2 169.254.0.17 -W 2 >/dev/null 2>&1
 	if [ $? -ne 0 ]; then
 		echo "failed"
-		exit 1
+		return 0
 	fi
-	echo "BMC is connected."
+	echo "Connected."
+    return 1
+}
+
+enable_bmc_interface() {
+	ifconfig usb0 169.254.0.18
+    check_bmc_connectivity
 }
 
 disable_bmc_interface() {
@@ -24,15 +30,15 @@ disable_bmc_interface() {
 }
 
 upgrade_image() {
-	echo "Downloading $1..."
-	curl -sL -o ${tmp_firmware_path} "https://github.com/ubiquiti/support-tools/blob/envrcore-upgrade-bmc-bios/envr-core/bmc-bios-upgrade/$1?raw=true"
+	printf "Downloading $1..."
+	curl -sL -o ${tmp_firmware_path} "https://github.com/ubiquiti/support-tools/blob/envrcore-upgrade-bmc-bios/envr-core/bmc-bios-upgrade/$1?raw=true" 2>/dev/null
 	if [ $? -ne 0 ]; then
 		echo "Failed."
 		exit 1
 	fi
 	echo "Done."
 
-	echo "Checking md5sum..."
+	printf "Checking md5sum..."
 	md5sum -b ${tmp_firmware_path} | grep -qw $2
 	if [ $? -ne 0 ]; then
 		echo "Failed."
@@ -40,45 +46,71 @@ upgrade_image() {
 	fi
 	echo "Done."
 
-	echo "Upgrading $1..."
-	curl -k -u root:ui -H "Content-Type: multipart/form-data" -X POST -F 'UpdateParameters={"Targets":["'/redfish/v1/Managers/bmc'"],"@Redfish.OperationApplyTime":"Immediate"};type=application/json' -F "UpdateFile=@${tmp_firmware_path};type=application/octet-stream" https://169.254.0.17/redfish/v1/UpdateService/update
+	printf "Uploading $1..."
+	output=$(curl -k -u root:ui -H "Content-Type: multipart/form-data" -X POST -F 'UpdateParameters={"Targets":["'/redfish/v1/Managers/bmc'"],"@Redfish.OperationApplyTime":"Immediate"};type=application/json' -F "UpdateFile=@${tmp_firmware_path};type=application/octet-stream" https://169.254.0.17/redfish/v1/UpdateService/update 2>/dev/null)
 	if [ $? -ne 0 ]; then
-		echo "failed to request upgrade."
+		echo "Failed to request upgrade."
 		exit 1
 	fi
+    if [ "$1" == "bios.tar" ]; then
+        bios_task_id=$(echo $output | jq -r .TaskState)
+    else
+        echo "Done."
+    fi
 }
 
 check_bmc_version() {
-	local output
-	echo "Checking BMC version..."
+	local output version
+	printf "Checking BMC version..."
 	output=$(curl -k -u root:ui https://169.254.0.17/redfish/v1/Managers/bmc 2>/dev/null)
 	if [ $? -ne 0 ]; then
-		echo "Failed to get BMC info"
-		return 0
+		echo "Failed to get BMC info."
+		return 1
 	fi
-	if [ $(echo $output | jq -r .FirmwareVersion) == "${bmc_version}" ]; then
-		return 0
+    version=$(echo $output | jq -r .FirmwareVersion)
+    echo ${version}
+	if [ "${version}" == "${bmc_version}" ]; then
+		return 1
 	fi
-	return 1
+	return 0
 }
 
 check_bios_version() {
-	local output
-	echo "Checking BIOS version..."
+	local output version
+	printf "Checking BIOS version..."
 	output=$(curl -k -u root:ui https://169.254.0.17/redfish/v1/UpdateService/FirmwareInventory/bios_active 2>/dev/null)
 	if [ $? -ne 0 ]; then
 		echo "Failed to get BIOS info"
-		exit 1
+		return 1
 	fi
-	if [ $(echo $output | jq -r .Version) == "${bios_version}" ]; then
-		return 0
+    version=$(echo $output | jq -r .Version)
+    echo ${version}
+	if [ "${version}" == "${bios_version}" ]; then
+		return 1
 	fi
-	return 1
+	return 0
+}
+
+check_bios_upgrade_status() {
+    local output status
+    while [ ! -z ${bios_task_id} ]; do
+        output=$(curl -k -u root:ui https://169.254.0.17/${bios_task_id} 2>dev/null)
+        if [ $? -ne 0 ]; then
+            echo "Failed to get task status"
+            return
+        fi
+        status=$(echo $output | jq -r .TaskState)
+        if [ "${status}" == "Completed" ]; then
+            echo "Completed."
+            return
+        fi
+    done
+    echo "No bios upgrade task."
 }
 
 retry_check() {
 	local start_time=$(cut -d\  -f1 /proc/uptime)
-	echo "Checking upgrade progress..."
+	printf "Checking upgrade progress..."
 	while $1; do
 		sleep 5
 		time_runs=time_runs=$(awk "BEGIN { print $(cut -d\  -f1 /proc/uptime) - ${start_time} }")
@@ -91,16 +123,18 @@ retry_check() {
 }
 
 enable_bmc_interface
+if check_bios_version; then
+	upgrade_image bios.tar ${bios_md5sum}
+    check_bios_upgrade_status
+else
+	echo "No need to upgrade BIOS."
+fi
 if check_bmc_version; then
 	upgrade_image bmc.tar ${bmc_md5sum}
+	retry_check check_bmc_connectivity
 	retry_check check_bmc_version
 else
 	echo "No need to upgrade BMC."
 fi
-
-if check_bios_version; then
-	upgrade_image bios.tar ${bios_md5sum}
-	retry_check check_bios_version
-else
-	echo "No need to upgrade BIOS."
-fi
+disable_bmc_interface
+echo "Check and upgrade BIOS/BMC done."
