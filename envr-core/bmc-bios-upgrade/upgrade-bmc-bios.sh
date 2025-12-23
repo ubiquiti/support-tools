@@ -31,7 +31,7 @@ disable_bmc_interface() {
 
 upgrade_image() {
 	printf "Downloading $1..."
-	curl -sL -o ${tmp_firmware_path} "https://github.com/ubiquiti/support-tools/blob/envrcore-upgrade-bmc-bios/envr-core/bmc-bios-upgrade/$1?raw=true" 2>/dev/null
+	curl -sL -o ${tmp_firmware_path} "https://github.com/ubiquiti/support-tools/blob/master/envr-core/bmc-bios-upgrade/$1?raw=true" 2>/dev/null
 	if [ $? -ne 0 ]; then
 		echo "Failed."
 		exit 1
@@ -53,7 +53,8 @@ upgrade_image() {
 		exit 1
 	fi
     if [ "$1" == "bios.tar" ]; then
-        bios_task_id=$(echo $output | jq -r .TaskState)
+        bios_task_id=$(echo $output | jq -r '."@odata.id"')
+        echo ${bios_task_id}
     else
         echo "Done."
     fi
@@ -93,8 +94,9 @@ check_bios_version() {
 
 check_bios_upgrade_status() {
     local output status
-    while [ ! -z ${bios_task_id} ]; do
-        output=$(curl -k -u root:ui https://169.254.0.17/${bios_task_id} 2>dev/null)
+    printf "Checking bios upgrade status..."
+    while [ ! -z "${bios_task_id}" ]; do
+        output=$(curl -k -u root:ui https://169.254.0.17${bios_task_id} 2>/dev/null)
         if [ $? -ne 0 ]; then
             echo "Failed to get task status"
             return
@@ -103,7 +105,10 @@ check_bios_upgrade_status() {
         if [ "${status}" == "Completed" ]; then
             echo "Completed."
             return
+        else
+            printf "%s." ${status}
         fi
+        sleep 5
     done
     echo "No bios upgrade task."
 }
@@ -126,6 +131,7 @@ enable_bmc_interface
 if check_bios_version; then
 	upgrade_image bios.tar ${bios_md5sum}
     check_bios_upgrade_status
+	retry_check check_bios_version
 else
 	echo "No need to upgrade BIOS."
 fi
