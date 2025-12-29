@@ -8,6 +8,14 @@ bios_md5sum="d56abfb7642f5f09853ea2ad12728614"
 timeout=300
 bios_task_id=""
 
+check_sysid() {
+	local sysid=$(awk -F= 'match($1, /systemid/) {print $2}' /proc/ubnthal/system.info)
+	if [ "da28" != "$sysid" ]; then
+		echo "Unsupported model $sysid"
+		exit 1
+	fi
+}
+
 check_bmc_connectivity() {
 	printf "Checking BMC connectivity..."
 	ping -q -c 2 169.254.0.17 -W 2 >/dev/null 2>&1
@@ -118,7 +126,7 @@ retry_check() {
 	printf "Checking upgrade progress..."
 	while $1; do
 		sleep 5
-		time_runs=time_runs=$(awk "BEGIN { print $(cut -d\  -f1 /proc/uptime) - ${start_time} }")
+		time_runs=$(awk "BEGIN { print $(cut -d\  -f1 /proc/uptime) - ${start_time} }")
 		if [ $(awk "BEGIN { print (${time_runs} >= ${timeout}) }") -eq 1 ]; then
 			echo "Timeout"
 			break
@@ -127,6 +135,8 @@ retry_check() {
 	echo "Done."
 }
 
+
+check_sysid
 enable_bmc_interface
 if check_bios_version; then
 	upgrade_image bios.tar ${bios_md5sum}
