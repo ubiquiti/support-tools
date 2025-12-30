@@ -142,6 +142,7 @@ if check_bios_version; then
 	upgrade_image bios.tar ${bios_md5sum}
     check_bios_upgrade_status
 	retry_check check_bios_version
+	sleep 10
 else
 	echo "No need to upgrade BIOS."
 fi
