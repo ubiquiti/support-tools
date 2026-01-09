@@ -154,4 +154,5 @@ else
 	echo "No need to upgrade BMC."
 fi
 disable_bmc_interface
-echo "Check and upgrade BIOS/BMC done."
+echo "Check and upgrade BIOS/BMC done. Rebooting..."
+ubnt-systool reboot "BMC/BIOS upgrade"
