@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Chip Firmware Upgrade Script for ENAS devices
-# This script upgrades JMB582/JMB585 chip firmware on supported Ubiquiti devices
+# Chip and ESE Firmware Upgrade Script for ENAS devices
+# This script upgrades JMB582/JMB585 chip firmware and ESE firmware on supported Ubiquiti devices
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
@@ -375,9 +375,6 @@ run_firmware_update() {
             # Parse chip info
             local version="${chip_info%:*}"
             local pin48="${chip_info#*:}"
-
-            log_info "version: $version"
-            log_info "pin48: $pin48"
             
             if upgrade_chip "$index" "$version" "$pin48"; then
                 chips_upgraded=$((chips_upgraded + 1))
@@ -406,14 +403,241 @@ run_firmware_update() {
     return 0
 }
 
+# ESE upgrade functions
+check_ese_present() {
+    local ese_id="$1"
+    local present_file="/sys/devices/platform/ui-ese-${ese_id}/present"
+    
+    if [[ -f "$present_file" ]] && [[ $(cat "$present_file" 2>/dev/null) == "1" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+get_ese_version() {
+    local ese_id="$1"
+    local version_file="/sys/devices/platform/ui-ese-${ese_id}/version"
+    
+    if [[ -f "$version_file" ]]; then
+        cat "$version_file" 2>/dev/null || echo ""
+    else
+        echo ""
+    fi
+}
+
+# Convert hex version to decimal for comparison
+version_to_decimal() {
+    local version="$1"
+    # Extract vXX.XX.XX format and convert hex to decimal
+    if [[ $version =~ ^v([0-9A-Fa-f]{2})\.([0-9A-Fa-f]{2})\.([0-9A-Fa-f]{2})$ ]]; then
+        local major=$((16#${BASH_REMATCH[1]}))
+        local minor=$((16#${BASH_REMATCH[2]}))
+        local patch=$((16#${BASH_REMATCH[3]}))
+        echo "$((major * 10000 + minor * 100 + patch))"
+    else
+        echo "0"
+    fi
+}
+
+upgrade_ese() {
+    local ese_id="$1"
+    local current_version="$2"
+    local base_path="/sys/devices/platform/ui-ese-${ese_id}"
+    
+    log_info "Upgrading ESE $ese_id (current version: $current_version)..."
+    
+    # Step 1: Enter DFU mode
+    log_info "Entering DFU mode for ESE $ese_id..."
+    if ! echo 1 > "$base_path/dfu_or_reset" 2>/dev/null; then
+        log_error "Failed to enter DFU mode for ESE $ese_id"
+        return 1
+    fi
+    
+    # Wait a moment for DFU mode to be ready
+    sleep 2
+    
+    # Step 2: Determine upgrade type based on version
+    local current_decimal
+    current_decimal=$(version_to_decimal "$current_version")
+    local threshold_decimal
+    threshold_decimal=$(version_to_decimal "v19.04.00")  # 0x190400 = 1639424
+    
+    local upgrade_type
+    if [[ $current_decimal -lt $threshold_decimal ]]; then
+        upgrade_type="all"
+        log_info "Version $current_version < v19.04.00, performing full upgrade"
+    else
+        upgrade_type="app"
+        log_info "Version $current_version >= v19.04.00, performing app upgrade only"
+    fi
+    
+    # Step 3: Start upgrade
+    log_info "Starting $upgrade_type upgrade for ESE $ese_id..."
+    if ! echo "$upgrade_type" > "$base_path/upgrade" 2>/dev/null; then
+        log_error "Failed to start upgrade for ESE $ese_id"
+        # Try to exit DFU mode
+        echo 0 > "$base_path/dfu_or_reset" 2>/dev/null || true
+        return 1
+    fi
+    
+    # Step 4: Monitor upgrade progress
+    log_info "Monitoring upgrade progress for ESE $ese_id..."
+    local progress=0
+    local max_wait=300  # 5 minutes timeout
+    local wait_count=0
+    
+    while [[ $progress -lt 100 && $wait_count -lt $max_wait ]]; do
+        # Check for upgrade error
+        local error_status
+        if [[ -f "$base_path/upgrade_error" ]]; then
+            error_status=$(cat "$base_path/upgrade_error" 2>/dev/null || echo "0")
+            if [[ "$error_status" != "0" ]]; then
+                log_error "Upgrade error detected for ESE $ese_id: $error_status"
+                echo 0 > "$base_path/dfu_or_reset" 2>/dev/null || true
+                return 1
+            fi
+        fi
+        
+        # Check progress
+        if [[ -f "$base_path/upgrade_progress" ]]; then
+            progress=$(cat "$base_path/upgrade_progress" 2>/dev/null || echo "0")
+            if [[ $((wait_count % 10)) -eq 0 ]]; then  # Log every 10 seconds
+                log_info "ESE $ese_id upgrade progress: ${progress}%"
+            fi
+        fi
+        
+        sleep 1
+        wait_count=$((wait_count + 1))
+    done
+    
+    if [[ $progress -lt 100 ]]; then
+        log_error "Upgrade timeout for ESE $ese_id (progress: ${progress}%)"
+        echo 0 > "$base_path/dfu_or_reset" 2>/dev/null || true
+        return 1
+    fi
+    
+    log_info "ESE $ese_id upgrade completed (${progress}%)"
+    
+    # Step 5: Wait and exit DFU mode
+    sleep 1
+    log_info "Exiting DFU mode for ESE $ese_id..."
+    if ! echo 0 > "$base_path/dfu_or_reset" 2>/dev/null; then
+        log_warn "Failed to exit DFU mode for ESE $ese_id"
+    fi
+    
+    # Wait for device to be ready
+    sleep 3
+    
+    # Step 6: Verify upgrade
+    local new_version
+    new_version=$(get_ese_version "$ese_id")
+    if [[ -n "$new_version" ]]; then
+        local new_decimal
+        new_decimal=$(version_to_decimal "$new_version")
+        local target_decimal
+        target_decimal=$(version_to_decimal "v1A.01.01")  # 0x1A0101 = 1704193
+        
+        if [[ $new_decimal -ge $target_decimal ]]; then
+            log_info "ESE $ese_id upgrade successful: $current_version -> $new_version"
+            return 0
+        else
+            log_error "ESE $ese_id upgrade verification failed: expected >= v1A.01.01, got $new_version"
+            return 1
+        fi
+    else
+        log_error "Could not verify ESE $ese_id version after upgrade"
+        return 1
+    fi
+}
+
+run_ese_upgrade() {
+    log_info "Starting ESE upgrade process..."
+    
+    local target_version="v1A.01.01"
+    local target_decimal
+    target_decimal=$(version_to_decimal "$target_version")
+    
+    local eses_present=0
+    local eses_checked=0
+    local eses_upgraded=0
+    local failed_upgrades=0
+    
+    # Check both ESE devices (1 and 2)
+    for ese_id in 1 2; do
+        log_info "Checking ESE $ese_id..."
+        
+        # Check if ESE is present
+        if ! check_ese_present "$ese_id"; then
+            log_info "ESE $ese_id is not present, skipping"
+            continue
+        fi
+        
+        eses_present=$((eses_present + 1))
+        eses_checked=$((eses_checked + 1))
+        log_info "ESE $ese_id is present"
+        
+        # Get current version
+        local current_version
+        current_version=$(get_ese_version "$ese_id")
+        
+        if [[ -z "$current_version" ]]; then
+            log_warn "Could not read version for ESE $ese_id, skipping"
+            continue
+        fi
+        
+        log_info "ESE $ese_id current version: $current_version"
+        
+        # Check if upgrade is needed
+        local current_decimal
+        current_decimal=$(version_to_decimal "$current_version")
+        
+        if [[ $current_decimal -ge $target_decimal ]]; then
+            log_info "ESE $ese_id is already up to date (>= $target_version)"
+            continue
+        fi
+        
+        log_info "ESE $ese_id needs upgrade: $current_version < $target_version"
+        
+        # Perform upgrade
+        if upgrade_ese "$ese_id" "$current_version"; then
+            eses_upgraded=$((eses_upgraded + 1))
+            UPGRADE_NEEDED=true
+        else
+            failed_upgrades=$((failed_upgrades + 1))
+        fi
+    done
+    
+    log_info "ESE upgrade summary:"
+    log_info "  ESEs present: $eses_present"
+    log_info "  ESEs checked: $eses_checked"
+    log_info "  ESEs upgraded: $eses_upgraded"
+    log_info "  Failed upgrades: $failed_upgrades"
+    
+    if [[ $failed_upgrades -gt 0 ]]; then
+        log_error "Some ESE upgrades failed"
+        return 1
+    fi
+    
+    if [[ $eses_present -eq 0 ]]; then
+        log_info "No ESE devices are present on this system"
+    elif [[ $eses_upgraded -eq 0 ]]; then
+        log_info "No ESE upgrades were needed"
+    else
+        log_info "All ESE upgrades completed successfully"
+    fi
+    
+    return 0
+}
+
 # Show usage information
 show_usage() {
     cat << EOF
 Usage: $SCRIPT_NAME [OPTIONS]
 
-Chip Firmware Upgrade Script for ENAS devices
+Chip and ESE Firmware Upgrade Script for ENAS devices
 
-This script upgrades JMB582/JMB585 chip firmware on supported Ubiquiti devices.
+This script upgrades JMB582/JMB585 chip firmware and ESE firmware on supported Ubiquiti devices.
 Supported devices: ea64, da28
 
 OPTIONS:
@@ -429,7 +653,7 @@ EXAMPLES:
 
 NOTES:
     - This script must be run as root
-    - The upgrade process takes 1-2 minutes
+    - The upgrade process takes 3-5 minutes
     - DO NOT power off the device during upgrade
     - A reboot is required after successful upgrade
 
@@ -472,9 +696,10 @@ confirm_upgrade() {
     fi
     
     echo
-    echo "WARNING: This will upgrade chip firmware on your device."
+    echo "WARNING: This will upgrade chip and ESE firmware on your device."
     echo "System ID: $SYSTEM_ID"
-    echo "Target firmware version: $TARGET_VERSION"
+    echo "Target chip firmware version: $TARGET_VERSION"
+    echo "Target ESE firmware version: v1A.01.01"
     echo
     echo "The upgrade process:"
     echo "  - Takes 1-2 minutes to complete"
@@ -483,11 +708,13 @@ confirm_upgrade() {
     echo "  - MUST NOT be interrupted (do not power off)"
     echo
     
-    read -p "Do you want to continue? [y/N]: " -r
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log_info "Upgrade cancelled by user"
-        exit 0
-    fi
+    echo "Starting upgrade in 5 seconds... (Press Ctrl+C to cancel)"
+    for i in 5 4 3 2 1; do
+        echo -n "$i... "
+        sleep 1
+    done
+    echo
+    echo "Starting upgrade now!"
 }
 
 # Main execution function
@@ -545,9 +772,28 @@ main() {
         for index in 1 2 3 4; do
             check_chip "$index" >/dev/null || true
         done
+        # Check ESE devices in dry run mode
+        for ese_id in 1 2; do
+            if check_ese_present "$ese_id"; then
+                local version
+                version=$(get_ese_version "$ese_id")
+                log_info "ESE $ese_id: present, version=$version"
+            else
+                log_info "ESE $ese_id: not present"
+            fi
+        done
     else
+        # Run chip firmware upgrade
         if ! run_firmware_update; then
-            log_error "Firmware update failed"
+            log_error "Chip firmware update failed"
+            log_error "Please contact support for assistance"
+            exit 1
+        fi
+        
+        # Run ESE upgrade
+        log_info "=== ESE Upgrade Phase ==="
+        if ! run_ese_upgrade; then
+            log_error "ESE upgrade failed"
             log_error "Please contact support for assistance"
             exit 1
         fi
