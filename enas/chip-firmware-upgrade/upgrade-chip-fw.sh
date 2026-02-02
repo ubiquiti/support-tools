@@ -6,8 +6,8 @@
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 # Script configuration
-readonly SCRIPT_NAME="$(basename "$0")"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_NAME="${0##*/}"
+readonly SCRIPT_DIR="$(pwd)"
 readonly TMP_DIR="/tmp"
 readonly LOG_FILE="/tmp/chip-firmware-upgrade.log"
 
@@ -824,6 +824,7 @@ main() {
 }
 
 # Script entry point
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# Handle both direct execution and piped execution (curl | bash)
+if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]] || [[ -z "${BASH_SOURCE[0]:-}" ]]; then
     main "$@"
 fi
