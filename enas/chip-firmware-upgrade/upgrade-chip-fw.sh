@@ -397,14 +397,12 @@ jmb58x_check_chip() {
     
     log_info "Found JMB58x chip at index $index: Version=$version, 48pin=$pin48" >&2
     
-    # Check if version is already up to date
+    # Return version:pin48 to stdout whenever a chip is found (caller counts as "checked")
+    # Caller will only run upgrade when version != JMB58X_TARGET_VERSION
+    echo "$version:$pin48"
     if [[ "$version" == "$JMB58X_TARGET_VERSION" ]]; then
         log_info "Chip at index $index is already up to date (version $version)" >&2
-        return 1
     fi
-    
-    # Return only the clean data to stdout
-    echo "$version:$pin48"
     return 0
 }
 
@@ -471,17 +469,18 @@ jmb58x_run_firmware_update() {
     for index in 1 2 3 4; do
         local chip_info
         
-        if chip_info=$(jmb58x_check_chip "$index"); then
+        chip_info=$(jmb58x_check_chip "$index") || true
+        if [[ -n "$chip_info" ]]; then
             chips_checked=$((chips_checked + 1))
-            
-            # Parse chip info
             local version="${chip_info%:*}"
             local pin48="${chip_info#*:}"
-            
-            if jmb58x_upgrade_chip "$index" "$version" "$pin48"; then
-                chips_upgraded=$((chips_upgraded + 1))
-            else
-                failed_upgrades=$((failed_upgrades + 1))
+            # Only upgrade if not already at target version
+            if [[ "$version" != "$JMB58X_TARGET_VERSION" ]]; then
+                if jmb58x_upgrade_chip "$index" "$version" "$pin48"; then
+                    chips_upgraded=$((chips_upgraded + 1))
+                else
+                    failed_upgrades=$((failed_upgrades + 1))
+                fi
             fi
         fi
     done
@@ -519,9 +518,12 @@ jmb58x_dry_run_check() {
 # ==============================================================================
 
 # Normalize version string from "24 08 21 20 c5 00" to "24082120c500" for comparison
+# Trims leading/trailing whitespace so "24 08 21 20 c5 00 " matches target
 asm28xx_normalize_version() {
     local v="$1"
-    echo "$v" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    printf '%s' "$v" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
 }
 
 # Download ASM28xx firmware files directly (standalone version)
@@ -641,6 +643,8 @@ asm28xx_get_versions() {
             local pci="${BASH_REMATCH[1]}"
             local idx="${BASH_REMATCH[2]}"
             local ver="${BASH_REMATCH[3]}"
+            ver="${ver#"${ver%%[![:space:]]*}"}"
+            ver="${ver%"${ver##*[![:space:]]}"}"
             versions["$idx"]="$ver"
         fi
     done <<< "$output"
@@ -665,19 +669,19 @@ asm28xx_upgrade_switch() {
             ;;
         ASM2812)
             log_info "ASM2812 firmware not available, skipping switch $switch_index"
-            return 0
+            return 2
             ;;
         *)
             log_warn "Unknown chip at switch $switch_index, skipping"
-            return 0
+            return 2
             ;;
     esac
 
     if [[ -z "$firmware_file" ]]; then
-        return 0
+        return 2
     fi
 
-    # For ASM2824: compare normalized version
+    # For ASM2824: compare normalized version (trim so "24 08 21 20 c5 00 " matches)
     if [[ "$chip_model" == "ASM2824" ]]; then
         local current_norm
         current_norm=$(asm28xx_normalize_version "$current_version")
@@ -685,7 +689,7 @@ asm28xx_upgrade_switch() {
         target_norm=$(asm28xx_normalize_version "$target_version")
         if [[ "$current_norm" == "$target_norm" ]]; then
             log_info "PCIe Switch $switch_index ($chip_model) already up to date (version: $current_version)"
-            return 0
+            return 2
         fi
     fi
 
@@ -711,6 +715,8 @@ asm28xx_upgrade_switch() {
     fi
     return 1
 }
+
+# asm28xx_upgrade_switch return codes: 0=upgraded, 1=failed, 2=skipped (no upgrade)
 
 # Main ASM28xx firmware update function
 asm28xx_run_firmware_update() {
@@ -769,11 +775,14 @@ asm28xx_run_firmware_update() {
             continue
         fi
 
-        if asm28xx_upgrade_switch "$switch_index" "$chip_model" "$current_version"; then
+        asm28xx_upgrade_switch "$switch_index" "$chip_model" "$current_version"
+        local ret=$?
+        if [[ $ret -eq 0 ]]; then
             upgraded=$((upgraded + 1))
-        else
+        elif [[ $ret -eq 1 ]]; then
             failed=$((failed + 1))
         fi
+        # ret=2 means skipped (ASM2812 no firmware, or already up to date) - not counted
     done
 
     log_info "ASM28xx firmware update summary: upgraded=$upgraded, failed=$failed"
