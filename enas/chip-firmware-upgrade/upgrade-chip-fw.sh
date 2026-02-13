@@ -693,7 +693,8 @@ asm28xx_upgrade_switch() {
     log_info "Using firmware: $firmware_file"
 
     local upgrade_log="$TMP_DIR/asm28xx_upgrade_${switch_index}.log"
-    if timeout 120 "$TMP_DIR/$ASM28XX_TOOL" /u "$TMP_DIR/$firmware_file" /b "$switch_index" >"$upgrade_log" 2>&1; then
+    # 28xxfwdl requires the .bin file in the current directory (no full path)
+    if ( cd "$TMP_DIR" && timeout 120 "./$ASM28XX_TOOL" /u "$firmware_file" /b "$switch_index" ) >"$upgrade_log" 2>&1; then
         if grep -q "Update SPI flash ROM......PASS" "$upgrade_log" && \
            grep -q "PASS : 1" "$upgrade_log" && ! grep -q "FAIL : [1-9]" "$upgrade_log"; then
             log_info "Successfully upgraded PCIe Switch $switch_index ($chip_model)"
@@ -1222,7 +1223,7 @@ main() {
         
         # 10-second countdown
         for i in 10 9 8 7 6 5 4 3 2 1; do
-            echo -n "Rebooting in $i seconds... "
+            echo -n "$i "
             sleep 1
         done
         
