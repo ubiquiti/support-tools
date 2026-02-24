@@ -20,6 +20,7 @@ readonly ASM2824_TARGET_VERSION="24 08 21 20 c5 00"
 readonly GITHUB_BASE_URL="https://github.com/ubiquiti/support-tools/raw/master/enas/chip-firmware-upgrade/firmware"
 readonly JMB58X_FIRMWARE_URL="$GITHUB_BASE_URL/jmb58x"
 readonly ASM28XX_FIRMWARE_URL="$GITHUB_BASE_URL/asm2824"
+readonly UI_ESE_FIRMWARE_URL="$GITHUB_BASE_URL/ui-ese"
 
 # JMB58x firmware configuration
 readonly JMB58X_TOOL="585upd"
@@ -28,6 +29,11 @@ readonly JMB58X_BIN1="JMB582B_STD_H35.01.00.02_20260109.bin"
 readonly JMB58X_BIN1_MD5="0e239f9fb3e31a24f10a9348e3f96e61"
 readonly JMB58X_BIN2="JMB585B_STD_H35.01.00.02_20260109.bin"
 readonly JMB58X_BIN2_MD5="024b9a124a21807a4b8ac0d13be161bd"
+
+# UI-ESE firmware configuration
+readonly UI_ESE_BIN="ui-ese-firmware.bin"
+readonly UI_ESE_BIN_MD5="9ec6d911637c2b4519d64f70b8790eff"
+readonly UI_ESE_INSTALL_PATH="/lib/firmware/ui-ese-firmware.bin"
 
 # ASM28xx firmware configuration
 readonly ASM28XX_TOOL="28xxfwdl"
@@ -822,6 +828,91 @@ asm28xx_dry_run_check() {
 }
 
 # ==============================================================================
+# UI-ESE FIRMWARE DOWNLOAD AND INSTALL FUNCTIONS
+# ==============================================================================
+
+ui_ese_download_files() {
+    log_info "Downloading UI-ESE firmware..."
+
+    local dest="$TMP_DIR/$UI_ESE_BIN"
+
+    local url="$UI_ESE_FIRMWARE_URL/$UI_ESE_BIN"
+
+    if ! curl -fsSL --connect-timeout 30 --max-time 300 -o "$dest" "$url"; then
+        log_error "Failed to download $UI_ESE_BIN from $url"
+        return 1
+    fi
+
+    if [[ ! -f "$dest" ]]; then
+        log_error "Downloaded file $dest does not exist"
+        return 1
+    fi
+
+    local file_size
+    file_size=$(stat -c%s "$dest" 2>/dev/null || echo "0")
+    if [[ $file_size -eq 0 ]]; then
+        log_error "Downloaded file $dest is empty"
+        return 1
+    fi
+
+    log_info "Successfully downloaded $UI_ESE_BIN (${file_size} bytes)"
+    return 0
+}
+
+ui_ese_validate_files() {
+    log_info "Validating UI-ESE firmware..."
+
+    local filepath="$TMP_DIR/$UI_ESE_BIN"
+
+    if [[ ! -f "$filepath" ]]; then
+        log_error "UI-ESE firmware not found: $filepath"
+        return 1
+    fi
+
+    local actual_md5
+    actual_md5=$(md5sum "$filepath" | awk '{print $1}')
+
+    if [[ "$actual_md5" != "$UI_ESE_BIN_MD5" ]]; then
+        log_error "Checksum mismatch for $UI_ESE_BIN (expected $UI_ESE_BIN_MD5, got $actual_md5)"
+        return 1
+    fi
+
+    log_info "UI-ESE firmware checksum verified"
+    return 0
+}
+
+ui_ese_install_firmware() {
+    log_info "Installing UI-ESE firmware to $UI_ESE_INSTALL_PATH..."
+
+    local src="$TMP_DIR/$UI_ESE_BIN"
+
+    if [[ -f "$UI_ESE_INSTALL_PATH" ]]; then
+        local existing_md5
+        existing_md5=$(md5sum "$UI_ESE_INSTALL_PATH" | awk '{print $1}')
+        if [[ "$existing_md5" == "$UI_ESE_BIN_MD5" ]]; then
+            log_info "UI-ESE firmware already up to date, skipping install"
+            return 0
+        fi
+        log_info "Replacing existing UI-ESE firmware at $UI_ESE_INSTALL_PATH"
+    fi
+
+    if ! cp -f "$src" "$UI_ESE_INSTALL_PATH"; then
+        log_error "Failed to install UI-ESE firmware to $UI_ESE_INSTALL_PATH"
+        return 1
+    fi
+
+    local installed_md5
+    installed_md5=$(md5sum "$UI_ESE_INSTALL_PATH" | awk '{print $1}')
+    if [[ "$installed_md5" != "$UI_ESE_BIN_MD5" ]]; then
+        log_error "Installed UI-ESE firmware checksum mismatch"
+        return 1
+    fi
+
+    log_info "UI-ESE firmware installed successfully"
+    return 0
+}
+
+# ==============================================================================
 # ESE FIRMWARE UPGRADE FUNCTIONS
 # ==============================================================================
 
@@ -1087,6 +1178,9 @@ cleanup() {
     # Clean up ASM28xx firmware files
     rm -f "$TMP_DIR/$ASM28XX_TOOL" "$TMP_DIR/$ASM2824_TARGET_BIN" 2>/dev/null || true
     
+    # Clean up UI-ESE firmware file
+    rm -f "$TMP_DIR/$UI_ESE_BIN" 2>/dev/null || true
+    
     # Clean up upgrade logs
     rm -f "$TMP_DIR"/*_upgrade_*.log 2>/dev/null || true
 }
@@ -1128,6 +1222,23 @@ main() {
     
     if ! jmb58x_validate_files; then
         log_error "JMB58x firmware validation failed"
+        exit 1
+    fi
+    
+    # Download and validate UI-ESE firmware (required)
+    log_info "=== UI-ESE Firmware Download & Validation ==="
+    if ! ui_ese_download_files; then
+        log_error "UI-ESE firmware download failed"
+        exit 1
+    fi
+    
+    if ! ui_ese_validate_files; then
+        log_error "UI-ESE firmware validation failed"
+        exit 1
+    fi
+
+    if ! ui_ese_install_firmware; then
+        log_error "UI-ESE firmware installation failed"
         exit 1
     fi
     
