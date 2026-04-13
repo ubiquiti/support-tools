@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TMP_DIR="/tmp"
+TMP_DIR="/root/upgrade-2812"
 
 TOOL="218xfwdl"
 TOOL_MD5=14816025073323388b917b78acb6909a
@@ -25,6 +25,7 @@ esac
 
 download_files() {
 	echo "==> Downloading files..."
+	[ -d $TMP_DIR ] || mkdir -p $TMP_DIR
 	curl -sL -o "$TMP_DIR/$TOOL" "$GITHUB_BASE/$TOOL"
 	curl -sL -o "$TMP_DIR/$FW_BIN" "$GITHUB_BASE/$FW_BIN"
 	chmod 755 "$TMP_DIR/$TOOL"
@@ -33,8 +34,8 @@ download_files() {
 check_files() {
 	pushd "$TMP_DIR" >/dev/null
 	md5sum -c <<EOF
-${TOOL_MD5}  ${TOOL}
-${FW_MD5}  ${FW_BIN}
+${TOOL_MD5}	${TOOL}
+${FW_MD5}	${FW_BIN}
 EOF
 	status=$?
 	popd >/dev/null
@@ -50,6 +51,19 @@ EOF
 	fi
 
 	return 0
+}
+
+update_firmware() {
+	local rc
+	echo "==> Updating ASM2812 firmware..."
+	echo "    PLEASE DO NOT TURN OFF THE DEVICE."
+
+	pushd "$TMP_DIR" >/dev/null
+	./${TOOL} /U ./${FW_BIN} | grep "PASS : 1"
+	rc=$?
+	popd >/dev/null
+
+	return $rc
 }
 
 check_version() {
@@ -69,25 +83,16 @@ if check_version; then
 	exit 0
 fi
 
-echo "==> Updating ASM2812 firmware..."
-echo "    PLEASE DO NOT TURN OFF THE DEVICE."
-
-if ! "${TMP_DIR}/${TOOL}" /U "${TMP_DIR}/${FW_BIN}"; then
+if ! update_firmware; then
 	echo "Firmware update FAILED. System will not reboot."
 	echo "Please contact support for help."
 	exit 2
 fi
 
-echo "==> Verifying firmware version..."
-
-if ! check_version; then
-	echo "Firmware verification FAILED. Version mismatch after update."
-	echo "System will not reboot. Please contact support for help."
-	exit 3
-fi
-
-echo "==> Firmware update completed and verified successfully"
 echo "==> Rebooting system..."
-
+echo "    PLEASE DO NOT TURN OFF THE DEVICE."
+echo "    Please verify the firmware version by command \"/root/upgrade-2812/218xfwdl /S\" after reboot."
+echo "    The version should be ${TARGET_VER}."
+echo "    If the firmware version is not the target version, please contact support for help."
 sleep 1
 reboot
