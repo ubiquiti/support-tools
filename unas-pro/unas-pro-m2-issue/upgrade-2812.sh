@@ -5,10 +5,10 @@ TMP_DIR="/root/upgrade-2812"
 TOOL="218xfwdl"
 TOOL_MD5=14816025073323388b917b78acb6909a
 
-FW_BIN="240821_20_AA_02.bin"
-FW_MD5=17ae845d2d0adc7b39e4a8d04133dbb1
+FW_BIN="240821_20_AA_F7.bin"
+FW_MD5=ee9cfbddfe19a01bb7581ffc7097c1b9
 
-TARGET_VER="24 08 21 20 aa 02"
+TARGET_VER="24 08 21 20 aa f7"
 
 GITHUB_BASE="https://github.com/ubiquiti/support-tools/raw/master/unas-pro/firmware/asm2812"
 
@@ -70,6 +70,16 @@ check_version() {
 	"${TMP_DIR}/${TOOL}" /S 2>/dev/null | grep -q "${TARGET_VER}"
 }
 
+show_current_version() {
+	local cur
+	cur=$("${TMP_DIR}/${TOOL}" /S 2>/dev/null | grep -ioE '([0-9a-f]{2} ?){6}' | head -n 1)
+	if [ -n "$cur" ]; then
+		echo "==> Current ASM2812 firmware version: ${cur}"
+	else
+		echo "==> Current ASM2812 firmware version: unknown"
+	fi
+}
+
 if ! download_files; then
 	exit 1
 fi
@@ -77,6 +87,8 @@ fi
 if ! check_files; then
 	exit 1
 fi
+
+show_current_version
 
 if check_version; then
 	echo "==> ASM2812 firmware is already up to date (${TARGET_VER})"
