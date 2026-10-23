@@ -21,7 +21,7 @@ fi
 
 bezel_present=$(cat /sys/class/leds/etherlight/present)
 if [ "$bezel_present" != "1" ]; then
-    echo "Please install Bezel before this migration start"
+    echo "Please install Bezel before this migration starts"
     exit 1
 fi
 
