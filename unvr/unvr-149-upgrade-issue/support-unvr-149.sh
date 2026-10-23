@@ -13,13 +13,13 @@ case "$sysid" in
 ea16|ea1a|ea20)
 	;;
 *)
-	echo "Not support on this product ($sysid)."
+	echo "Not supported on this product ($sysid)."
 	exit 1
 	;;
 esac
 
 if ! grep -q al324\\.v1\\.4\\.9 /usr/lib/version; then
-	echo "Not support on this fw version ($(cat /usr/lib/version))."
+	echo "Not supported on this fw version ($(cat /usr/lib/version))."
 	exit 1
 fi
 
